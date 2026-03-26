@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gallery | 纸船</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      background: linear-gradient(90deg, #fef0f7 0%, #fce7f3 25%, #e0f2fe 75%, #e0f2ff 100%);
+      background-attachment: fixed;
+    }
+
+    .wall {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .photo {
+      position: absolute;
+      width: 200px;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.6);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+      transition: box-shadow 0.2s ease; /* 移除了 transform 过渡，避免拖拽卡顿 */
+      cursor: grab;
+      /* 改变 transform-origin 让拖拽和缩放更自然 */
+      transform-origin: center center; 
+    }
+
+    .photo:active {
+      cursor: grabbing;
+    }
+
+    .photo:hover {
+      box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+      z-index: 100;
+    }
+
+    /* 隐藏原图的类，当预览打开时，原来的卡片隐身 */
+    .photo.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .photo img {
+      width: 100%;
+      display: block;
+      pointer-events: none;
+      border-radius: 6px;
+    }
+
+    /* 全屏预览层 */
+    .preview {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      /* 背景颜色通过 rgba 过渡 */
+      background: rgba(0, 0, 0, 0); 
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      transition: background 0.4s ease;
+    }
+
+    .preview.active {
+      background: rgba(0, 0, 0, 0.85);
+    }
+
+    /* 预览图也带上相框效果，这样过渡才无缝 */
+    .preview-img-wrapper {
+      background: rgba(255, 255, 255, 1);
+      padding: 12px;
+      border-radius: 10px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+      /* 核心动画曲线：类似苹果的弹性缓动 */
+      transition: transform 0.5s cubic-bezier(0.25, 1, 0.3, 1);
+      will-change: transform;
+      transform-origin: top left; /* 动画原点设为左上角，方便精确计算 */
+    }
+
+    .preview-img-wrapper img {
+      display: block;
+      max-width: 85vw;
+      max-height: 85vh;
+      border-radius: 6px;
+    }
+
+    /* 返回按钮 */
+    .back-home {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      padding: 10px 20px;
+      background: rgba(255,255,255,0.8);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.5);
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      z-index: 1000;
+      transition: 0.2s;
+    }
+  </style>
+</head>
+
+<body>
+  <button class="back-home" onclick="window.location.href='https://papership.top'">← 返回主页</button>
+  <div class="wall" id="wall"></div>
+  <div class="preview" id="preview"></div>
+
+  <script>
+    // 你可以使用你自己的真实图片链接
+    const images =[
+      "1.jpg",
+      "2.jpg",
+    ];
+    
+    const wall = document.getElementById("wall");
+    const preview = document.getElementById("preview");
+
+    let currentPhotoEl = null; // 记录当前点开的照片 DOM
+
+    // 1. 初始化照片墙
+    images.forEach((src, index) => {
+      const el = document.createElement("div");
+      el.className = "photo";
+      el.innerHTML = `<img src="${src}">`;
+
+      // 预先生成随机旋转角度，并存到 dataset 中，避免后续去解析 transform 矩阵
+      const rotateDeg = (Math.random() - 0.5) * 30; 
+      el.dataset.rot = rotateDeg;
+
+      // 保证图片不要超出屏幕边界太多
+      const maxX = window.innerWidth - 250;
+      const maxY = window.innerHeight - 300;
+      el.style.left = Math.max(20, Math.random() * maxX) + "px";
+      el.style.top = Math.max(20, Math.random() * maxY) + "px";
+      el.style.transform = `rotate(${rotateDeg}deg)`;
+      el.style.zIndex = index + 1;
+
+      wall.appendChild(el);
+      initDragAndClick(el, src);
+    });
+
+    // 2. 拖拽与点击逻辑整合
+    // 修复了之前给 document 疯狂绑定事件导致的内存泄漏和冲突
+    let highestZ = 100;
+
+    function initDragAndClick(el, src) {
+      let isDragging = false;
+      let startX, startY;
+      let initialLeft, initialTop;
+
+      el.addEventListener("mousedown", e => {
+        isDragging = true;
+        
+        // 记录鼠标按下时的坐标
+        startX = e.clientX;
+        startY = e.clientY;
+        
+        // 记录照片当前的位置
+        initialLeft = parseFloat(el.style.left);
+        initialTop = parseFloat(el.style.top);
+        
+        // 提升层级
+        highestZ++;
+        el.style.zIndex = highestZ;
+      });
+
+      document.addEventListener("mousemove", e => {
+        if (!isDragging) return;
+        
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        
+        // 实时改变位置（因为保留了 rotate，所以加上去）
+        el.style.left = `${initialLeft + dx}px`;
+        el.style.top = `${initialTop + dy}px`;
+      });
+
+      document.addEventListener("mouseup", e => {
+        if (!isDragging) return;
+        isDragging = false;
+
+        // 计算鼠标移动的总距离
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        // 如果移动距离小于 5 像素，我们认为这是一次“点击”而不是“拖拽”
+        if (distance < 5) {
+          openFromPhoto(el, src);
+        }
+      });
+    }
+
+    // 3. 核心：飞跃放大动画 (FLIP 思想)
+    function openFromPhoto(photoEl, src) {
+      currentPhotoEl = photoEl;
+
+      // 【技巧】为了获取准确的宽高和坐标，必须先临时移除旋转！
+      const rot = photoEl.dataset.rot;
+      photoEl.style.transform = "rotate(0deg)";
+      const thumbRect = photoEl.getBoundingClientRect();
+      photoEl.style.transform = `rotate(${rot}deg)`; // 获取完赶紧恢复
+
+      // 构建预览界面的 DOM（带着相框 wrapper）
+      preview.innerHTML = `
+        <div class="preview-img-wrapper">
+          <img src="${src}">
+        </div>
+      `;
+      preview.style.display = "flex";
+      
+      const wrapper = preview.querySelector('.preview-img-wrapper');
+      const img = preview.querySelector('img');
+
+      // 等待图片加载完成，才能计算出它在屏幕中央的最终尺寸
+      img.onload = () => {
+        // 隐藏原图，避免重影
+        photoEl.classList.add('hidden');
+
+        // 获取中央目标位置的 Rect
+        const targetRect = wrapper.getBoundingClientRect();
+
+        // 计算缩放比例 (原相框宽度 / 全屏相框宽度)
+        const scaleX = thumbRect.width / targetRect.width;
+        const scaleY = thumbRect.height / targetRect.height;
+        // 保持比例统一缩放，以高或宽比例最大的为准
+        const scale = Math.max(scaleX, scaleY); 
+
+        // 计算平移距离 (注意由于 transform-origin 是 top left，所以直接相减)
+        const translateX = thumbRect.left - targetRect.left;
+        const translateY = thumbRect.top - targetRect.top;
+
+        // 【FIRST & INVERT】立即将居中的大图通过 transform "强行" 缩放到原图的位置和角度（不要过渡动画）
+        wrapper.style.transition = "none";
+        wrapper.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY}) rotate(${rot}deg)`;
+
+        // 强迫浏览器重绘 (Reflow)
+        wrapper.offsetHeight;
+
+        // 【PLAY】开启过渡动画，并将 transform 归零（回到屏幕中央）
+        wrapper.style.transition = "transform 0.5s cubic-bezier(0.25, 1, 0.3, 1)";
+        wrapper.style.transform = `translate(0, 0) scale(1) rotate(0deg)`;
+        
+        // 背景渐渐变黑
+        preview.classList.add("active");
+      };
+    }
+
+    // 4. 核心：飞回原位动画
+    preview.addEventListener("click", () => {
+      if (!currentPhotoEl) return;
+
+      const wrapper = preview.querySelector(".preview-img-wrapper");
+      
+      // 同样，临时移除原图的旋转以获取最新的准确坐标 (以防在预览期间改变了窗口大小)
+      const rot = currentPhotoEl.dataset.rot;
+      currentPhotoEl.style.transform = "rotate(0deg)";
+      const thumbRect = currentPhotoEl.getBoundingClientRect();
+      currentPhotoEl.style.transform = `rotate(${rot}deg)`;
+
+      const targetRect = wrapper.getBoundingClientRect();
+
+      // 这里直接使用 wrapper 本身未经缩放的尺寸来计算 (抵消掉 scale 的影响)
+      wrapper.style.transition = "none";
+      wrapper.style.transform = "translate(0, 0) scale(1) rotate(0deg)";
+      const baseRect = wrapper.getBoundingClientRect();
+
+      const scaleX = thumbRect.width / baseRect.width;
+      const scaleY = thumbRect.height / baseRect.height;
+
+      const translateX = thumbRect.left - baseRect.left;
+      const translateY = thumbRect.top - baseRect.top;
+
+      // 强迫浏览器重绘
+      wrapper.offsetHeight;
+
+      // 开启过渡动画，飞回原位
+      wrapper.style.transition = "transform 0.4s cubic-bezier(0.25, 1, 0.3, 1)";
+      wrapper.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY}) rotate(${rot}deg)`;
+      
+      // 背景变透明
+      preview.classList.remove("active");
+
+      // 动画结束后，恢复显示原图，并清空预览层
+      setTimeout(() => {
+        currentPhotoEl.classList.remove('hidden');
+        preview.style.display = "none";
+        preview.innerHTML = "";
+        currentPhotoEl = null;
+      }, 400); // 这里的 400ms 和 transition 0.4s 保持一致
+    });
+  </script>
+</body>
+</html>
